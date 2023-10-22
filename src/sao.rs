@@ -1,3 +1,5 @@
+use std::{alloc::Layout, usize};
+
 use paste::paste;
 
 pub trait SaoTuple {
@@ -31,7 +33,7 @@ macro_rules! sao_tuple_impl {
                     $(
                         std::alloc::dealloc(
                             paste!([<data_$T:lower>]) as *mut u8,
-                            std::alloc::Layout::array::<$T>(size).unwrap_unchecked()
+                            arr_layout::<$T>(size)
                         );
                     )*
                 }
@@ -55,8 +57,8 @@ macro_rules! sao_tuple_impl {
                 }
             }
 
-            pub fn push(&mut self, ($( paste!([<input_$T:lower>]) ),*): ($($T,)*)) {
-                self.check_realloc();
+            pub fn push(&mut self, ($( paste!([<input_$T:lower>]), )*): ($($T,)*)) {
+                self.check_grow();
 
                 let ($( paste!([<data_$T:lower>]) ),*) = self.data;
 
@@ -89,7 +91,7 @@ macro_rules! sao_tuple_impl {
                     $(
                         unsafe {
                             let ptr = paste!([<data_$T:lower>]).add(index);
-                            std::ptr::copy(ptr.add(1), ptr, len_diff_u);
+                            ptr.add(1).copy_to(ptr, len_diff_u);
                         }
                     )*;
                 }
@@ -97,22 +99,54 @@ macro_rules! sao_tuple_impl {
                 self.len -= 1;
             }
 
-            fn check_realloc(&mut self) {
-                if (self.capacity == 0) | (self.len >= self.capacity) {
-                    let new_capacity = self.capacity.max(1) * 2;
-                    let ($( paste!([<data_$T:lower>]) ),*) = self.data;
-                    unsafe {
-                        self.data = ($(
-                            std::alloc::realloc(
-                                paste!([<data_$T:lower>]) as *mut u8,
-                                std::alloc::Layout::array::<$T>(self.capacity)
-                                    .unwrap_unchecked(),
-                                new_capacity
-                            ) as *mut $T
-                        ),*);
-                    }
-                    self.capacity = new_capacity;
+            pub fn swap_remove(&mut self, index: usize) {
+                let ($( paste!([<data_$T:lower>]) ),*) = self.data;
+                let last_index = self.len - 1;
+                if (index != last_index) {
+                    ($( unsafe {
+                        let base_ptr = paste!([<data_$T:lower>]);
+                        base_ptr.add(index).copy_from(base_ptr.add(last_index), 1);
+                    } ),*);
                 }
+
+                self.len -= 1;
+            }
+
+            fn check_grow(&mut self) {
+                if (self.len < self.capacity) {
+                    return;
+                } 
+
+                if (self.capacity == 0) {
+                    self.data = ($( unsafe {
+                        std::alloc::alloc(arr_layout::<$T>(1)) as *mut $T 
+                    },)*);
+
+                    self.capacity = 1;
+                    return;
+                }
+
+                let new_capacity = self.capacity * 2;
+                
+                let mut prev_ptrs = self.data;
+                let ($( paste!([<prev_data_$T:lower>]) ),*) = prev_ptrs;
+
+                self.data = unsafe { ( $(
+                    std::alloc::alloc(
+                        arr_layout::<$T>(new_capacity)
+                    ) as *mut $T
+                ),* ) };
+
+                let ($( paste!([<new_data_$T:lower>]) ),*) = self.data;
+                ($(unsafe {
+                    paste!([<new_data_$T:lower>]).copy_from_nonoverlapping(
+                        paste!([<prev_data_$T:lower>]), 
+                        self.capacity
+                    )
+                }),*);
+
+                prev_ptrs.drop_ptrs(self.capacity);
+                self.capacity = new_capacity;
             }
 
             pub unsafe fn as_refs_tuple(&self) -> ($(& [$T],)*) {
@@ -155,7 +189,7 @@ macro_rules! sao_tuple_impl {
                 let ($( paste!([<$T:lower>]) ),*) = self.data;
                 unsafe {
                     ($(
-                        &*paste!([<$T:lower>]).add(index) as & $T
+                        & *paste!([<$T:lower>]).add(index) as & $T
                     ,)*)
                 }
             }
@@ -175,6 +209,14 @@ macro_rules! sao_tuple_impl {
 impl<T: SaoTuple> Drop for SaoVec<T> {
     fn drop(&mut self) {
         self.data.drop_ptrs(self.capacity);
+    }
+}
+
+#[inline]
+unsafe fn arr_layout<T>(size: usize) -> Layout {
+    unsafe {
+        let a = Layout::array::<T>(size).unwrap_unchecked();
+        a
     }
 }
 
