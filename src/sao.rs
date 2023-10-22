@@ -2,6 +2,10 @@ use std::{alloc::Layout, usize};
 
 use paste::paste;
 
+pub trait RefsTuple<'a> {
+    
+}
+
 pub trait SaoTuple {
     type Tuple;
     type PtrsTuple;
@@ -49,12 +53,30 @@ macro_rules! sao_tuple_impl {
         }
 
         impl<$($T: 'static,)*> SaoVec<($($T,)*)> {
-            pub fn new() -> SaoVec<($($T,)*)> {
+            pub fn new() -> SaoVec<($($T),*)> {
                 Self {
                     data: ($(std::ptr::null_mut::<$T>(),)*),
                     len: 0,
                     capacity: 0
                 }
+            }
+
+            pub fn with_capacity(capacity: usize) -> SaoVec<($($T),*)> {
+                Self {
+                    data: ($( unsafe {
+                        std::alloc::alloc(arr_layout::<$T>(capacity)) as *mut $T
+                    } ),*),
+                    len: 0,
+                    capacity: capacity
+                }
+            }
+
+            pub fn reserve(&mut self, capacity: usize) {
+                if capacity <= self.len {
+                    return;
+                }
+
+                self.increase_capacity(capacity);
             }
 
             pub fn push(&mut self, ($( paste!([<input_$T:lower>]), )*): ($($T,)*)) {
@@ -112,6 +134,14 @@ macro_rules! sao_tuple_impl {
                 self.len -= 1;
             }
 
+            pub fn swap(&mut self, left_index: usize, right_index: usize) {
+                let ($( paste!([<data_$T:lower>]) ),*) = self.data;
+                ($( unsafe {
+                    let base_ptr = paste!([<data_$T:lower>]);
+                    base_ptr.add(left_index).swap(base_ptr.add(right_index));
+                } ),*);
+            }
+ 
             fn check_grow(&mut self) {
                 if (self.len < self.capacity) {
                     return;
@@ -123,11 +153,12 @@ macro_rules! sao_tuple_impl {
                     },)*);
 
                     self.capacity = 1;
-                    return;
+                } else {
+                    self.increase_capacity(self.capacity * 2);
                 }
+            }
 
-                let new_capacity = self.capacity * 2;
-                
+            fn increase_capacity(&mut self, new_capacity: usize) {
                 let mut prev_ptrs = self.data;
                 let ($( paste!([<prev_data_$T:lower>]) ),*) = prev_ptrs;
 
@@ -149,32 +180,18 @@ macro_rules! sao_tuple_impl {
                 self.capacity = new_capacity;
             }
 
-            pub unsafe fn as_refs_tuple(&self) -> ($(& [$T],)*) {
+            pub fn as_refs_tuple(&self) -> ($(& [$T],)*) {
                 let ($( paste!([<$T:lower>]) ),*) = self.data;
-                ($(
+                ($( unsafe {
                     std::slice::from_raw_parts(paste!([<$T:lower>]), self.len)
-                ,)*)
+                } ),*)
             }
 
-            pub unsafe fn as_refs_tuple_mut(&self) -> ($(&mut [$T],)*) {
+            pub fn as_refs_tuple_mut(&self) -> ($(&mut [$T],)*) {
                 let ($( paste!([<$T:lower>]) ),*) = self.data;
-                ($(
+                ($( unsafe {
                     std::slice::from_raw_parts_mut(paste!([<$T:lower>]), self.len)
-                ,)*)
-            }
-
-            pub unsafe fn as_ptr_tuple(&self) -> ($(& $T,)*) {
-                let ($( paste!([<$T:lower>]) ),*) = self.data;
-                ($(
-                    &*paste!([<$T:lower>]) as & $T
-                ,)*)
-            }
-
-            pub unsafe fn as_ptr_tuple_mut(&self) -> ($(& mut $T,)*) {
-                let ($( paste!([<$T:lower>]) ),*) = self.data;
-                ($(
-                    &mut *paste!([<$T:lower>]) as &mut $T
-                ,)*)
+                } ),*)
             }
 
             pub fn len(&self) -> usize {
@@ -219,6 +236,7 @@ unsafe fn arr_layout<T>(size: usize) -> Layout {
         a
     }
 }
+
 
 sao_tuple_impl!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
 sao_tuple_impl!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
